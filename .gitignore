@@ -1,0 +1,7 @@
+bili_helper.log
+__pycache__/
+*.pyc
+build/
+dist/
+*.spec
+*.tmp

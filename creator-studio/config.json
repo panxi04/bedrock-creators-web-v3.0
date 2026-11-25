@@ -1,0 +1,176 @@
+{
+ "bedrock": {
+  "label": "基岩版",
+  "enabled": true,
+  "keywords": [
+   "我的世界基岩版",
+   "基岩版",
+   "我的世界PE",
+   "我的世界BE",
+   "MCPE",
+   "我的世界手机版",
+   "MCBE"
+  ],
+  "years": [
+   2011,
+   2026
+  ],
+  "workers": 8,
+  "detail_delay": 0.7,
+  "signals": {
+   "strong": [
+    "基岩",
+    "bedrock",
+    "mcbe",
+    "mcpe",
+    "携带版",
+    "addon",
+    "行为包",
+    "pocket\\s*edition",
+    "minecraft\\s*pe"
+   ],
+   "weak": [
+    "手机版",
+    "移动版",
+    "手游",
+    "安卓",
+    "android",
+    "ios"
+   ],
+   "context": [
+    "我的世界",
+    "minecraft",
+    "(?<![A-Za-z])mc(?![A-Za-z])",
+    "方块",
+    "苦力怕",
+    "史蒂夫",
+    "红石",
+    "生存",
+    "建造"
+   ],
+   "other_game": [
+    "迷你世界",
+    "蛋仔派对",
+    "和平精英",
+    "原神",
+    "roblox",
+    "我的世界地下城"
+   ]
+  }
+ },
+ "java": {
+  "label": "Java版",
+  "enabled": true,
+  "keywords": [
+   "我的世界Java版",
+   "Java版生存",
+   "我的世界java版",
+   "minecraft java",
+   "MCJE",
+   "Minecraft",
+   "我的世界电脑版"
+  ],
+  "years": [
+   2011,
+   2026
+  ],
+  "workers": 8,
+  "detail_delay": 0.7,
+  "signals": {
+   "strong": [
+    "java版",
+    "java\\s*edition",
+    "minecraft\\s*java",
+    "forge",
+    "fabric",
+    "optifine",
+    "(?<![A-Za-z])java(?![A-Za-z])"
+   ],
+   "weak": [
+    "模组",
+    "整合包",
+    "光影",
+    "材质包",
+    "mod"
+   ],
+   "context": [
+    "我的世界",
+    "minecraft",
+    "(?<![A-Za-z])mc(?![A-Za-z])",
+    "方块",
+    "生存",
+    "红石"
+   ],
+   "other_game": [
+    "迷你世界",
+    "蛋仔派对",
+    "基岩版",
+    "bedrock",
+    "mcbe",
+    "我的世界地下城"
+   ]
+  }
+ },
+ "create": {
+  "label": "机械动力",
+  "enabled": true,
+  "keywords": [
+   "我的世界机械动力",
+   "机械动力",
+   "机械动力生存",
+   "我的世界create",
+   "create mod",
+   "minecraft create",
+   "create模组"
+  ],
+  "years": [
+   2019,
+   2026
+  ],
+  "workers": 8,
+  "detail_delay": 0.7,
+  "signals": {
+   "strong": [
+    "机械动力",
+    "create\\s*mod",
+    "create模组",
+    "我的世界create",
+    "mc\\s*create",
+    "contraption"
+   ],
+   "weak": [
+    "create",
+    "齿轮",
+    "传送带",
+    "蒸汽",
+    "动力",
+    "自动化",
+    "红石机关"
+   ],
+   "context": [
+    "我的世界",
+    "minecraft",
+    "(?<![A-Za-z])mc(?![A-Za-z])",
+    "方块",
+    "生存",
+    "整合包",
+    "模组"
+   ],
+   "other_game": [
+    "迷你世界",
+    "蛋仔派对",
+    "罗布乐思",
+    "roblox",
+    "我的世界地下城",
+    "原神",
+    "和平精英"
+   ]
+  }
+ },
+ "incremental_interval_days": 90,
+ "incremental_pages_max": 5,
+ "incremental_catchup_pages": 2,
+ "incremental_recheck_max": 200,
+ "space_names_max": 300,
+ "net_fail_limit": 5
+}
