@@ -1288,14 +1288,17 @@ function cleanAvatar(face) {
 // 有限并发预热，到时间就走（宁可几张头像用首字母，也不让用户干等）
 function prefetchClean(faces, deadlineMs) {
   var list = faces.slice(0, 400);
-  if (!list.length || !helperImgBase()) return Promise.resolve();
+  // 注意：同源部署（http/https）下 helperImgBase() 就是空串（相对路径 /img?u=），
+  // 不能拿它当「助手不可用」判断——只有 file:// 才必须有显式助手地址。
+  // 这里必须与 cleanAvatar 保持一致，否则线上导出会一个头像都不预取。
+  if (!list.length || (!helperImgBase() && location.protocol === "file:")) return Promise.resolve();
   return new Promise(function (resolve) {
     var i = 0, running = 0, done = false;
     var timer = setTimeout(function () { done = true; resolve(); }, deadlineMs);
     function step() {
       if (done) return;
       if (i >= list.length && running === 0) { done = true; clearTimeout(timer); resolve(); return; }
-      while (running < 10 && i < list.length) {
+      while (running < 14 && i < list.length) {
         running++;
         cleanAvatar(list[i++]).then(function () { running--; step(); });
       }
@@ -1604,7 +1607,7 @@ if (exportBtn) exportBtn.addEventListener("click", function () {
   var focused = plan.kind !== "full";
   appToast(focused ? "正在生成人物视图…" : "正在生成图片…", 1600);
   var pre = (plan.faces.length && helperUsable())
-    ? prefetchClean(plan.faces, plan.faces.length > 90 ? 2800 : 1800)
+    ? prefetchClean(plan.faces, plan.faces.length > 90 ? 3600 : 2400)
     : Promise.resolve();
   pre.then(function () { drawExport(plan); })
     .catch(function (e) { appToast("导出失败：" + (e && e.message ? e.message : e)); })

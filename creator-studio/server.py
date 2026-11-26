@@ -3,13 +3,16 @@
 
 统一管理：抓取数据 / 联网搜索 / 打开创作者星图。
 """
+import hashlib
 import json
 import os
+import re
 import sys
 import threading
 import time
 import urllib.parse
 import webbrowser
+from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import engine
@@ -33,6 +36,93 @@ APPLY_LOCK = threading.Lock()
 RENDER_JOB = {"running": False, "percent": 0, "phase": "", "done": False, "error": "", "added": {}}
 RENDER_LOCK = threading.Lock()
 PORT = int(os.environ.get("CREATOR_STUDIO_PORT", "8788"))
+
+# ---- 输入与并发限制 ----
+# /api/apply 是唯一对公网开放的可写接口（Caddy 白名单里只有它），
+# 其余 /api/* 只在管理器本机使用，但依然统一限一遍，避免畸形请求把进程搞挂。
+MAX_BODY = 16 * 1024          # 请求体上限 16KB
+MAX_QUERY = 2048              # 整条 URL 上限
+MAX_KW = 50                   # 搜索关键词截断长度（与前端提示一致）
+MAX_URL = 512                 # /img 代理的地址长度上限
+MAX_CONCURRENT = 32           # 同时处理的连接数，超出直接 503
+SOCK_TIMEOUT = 30             # 单连接 socket 超时，防慢速连接长期占用
+LOG_TAIL_BYTES = 8 * 1024 * 1024   # /api/log 最多读日志尾部 8MB
+
+APPLY_PER_IP = 5              # 每 IP 10 分钟最多提交 5 条
+APPLY_GLOBAL = 120            # 全局 10 分钟最多 120 条，防刷爆磁盘
+APPLY_WINDOW = 600
+
+_CTRL = re.compile(r"[\x00-\x1f\x7f]")
+_APPLY_HITS = {}              # ip -> deque[ts]，只保留窗口内的提交
+_APPLY_ALL = deque()          # 全局窗口内的提交时间戳（用于总量配额）
+_APPLY_LOCK = threading.Lock()
+
+
+def _clean(s, limit):
+    """去掉控制字符（含换行，防止往 apply_list.txt 里注入假记录）并截断。"""
+    return _CTRL.sub(" ", str(s or "")).strip()[:limit]
+
+
+def _qint(q, key, default, lo, hi):
+    """取整数查询参数：非法抛 ValueError（调用方回 400），越界clamp。"""
+    raw = (q.get(key) or [""])[0].strip()
+    if not raw:
+        return default
+    try:
+        v = int(raw)
+    except (TypeError, ValueError):
+        raise ValueError(key)
+    return max(lo, min(hi, v))
+
+
+def _apply_allowed(ip):
+    """按 IP + 全局两个维度的滑动窗口，防止 /api/apply 被灌垃圾。
+
+    注意：全局总量必须用「窗口内」的时间戳统计。早期写法遍历所有 IP 的原始列表，
+    过期的历史记录会永久计入总量，累积到 APPLY_GLOBAL 之后所有人都会收到 429。
+    """
+    now = time.time()
+    cutoff = now - APPLY_WINDOW
+    with _APPLY_LOCK:
+        while _APPLY_ALL and _APPLY_ALL[0] <= cutoff:
+            _APPLY_ALL.popleft()
+        q = _APPLY_HITS.get(ip)
+        if q is None:
+            q = _APPLY_HITS[ip] = deque()
+        else:
+            while q and q[0] <= cutoff:
+                q.popleft()
+        if len(q) >= APPLY_PER_IP or len(_APPLY_ALL) >= APPLY_GLOBAL:
+            return False
+        q.append(now)
+        _APPLY_ALL.append(now)
+        # 僵尸 IP 的空队列定期清掉，避免字典无限增长
+        if len(_APPLY_HITS) > 5000:
+            for k in [k for k, v in _APPLY_HITS.items() if not v]:
+                _APPLY_HITS.pop(k, None)
+        return True
+
+
+def _client_ip(handler):
+    """经过 Cloudflare 时真实 IP 在 CF-Connecting-IP；直连（本机）用它自己。"""
+    ip = (handler.headers.get("CF-Connecting-IP") or "").strip()
+    if not ip:
+        ip = handler.client_address[0]
+    return _clean(ip, 45)
+
+
+def _read_log_tail(path, max_bytes=LOG_TAIL_BYTES):
+    """读日志尾部，返回 (lines, truncated)。日志过大时只给尾部，不再整份读进内存。"""
+    size = os.path.getsize(path)
+    if size <= max_bytes:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return f.read().splitlines(), False
+    with open(path, "rb") as f:
+        f.seek(size - max_bytes)
+        raw = f.read()
+    if b"\n" in raw:
+        raw = raw.split(b"\n", 1)[1]      # 丢掉可能被截断的半行
+    return raw.decode("utf-8", "replace").splitlines(), True
 
 # 原项目 index.html：与 exe 同层（或源码运行时在上级目录）。只取路径打开，绝不修改。
 def find_visual_index():
@@ -223,16 +313,29 @@ def _render_worker(pending):
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "CreatorStudio/1.0"
+    timeout = SOCK_TIMEOUT
 
-    def _send(self, code, ctype, body, cache="no-store"):
+    def _send(self, code, ctype, body, cache="no-store", extra=None):
         try:
             self.send_response(code)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", cache)
             self.send_header("Access-Control-Allow-Origin", "*")
+            for k, v in (extra or {}).items():
+                self.send_header(k, v)
             self.end_headers()
             self.wfile.write(body)
+        except (ConnectionResetError, BrokenPipeError):
+            pass
+
+    def _not_modified(self, etag):
+        try:
+            self.send_response(304)
+            self.send_header("ETag", etag)
+            self.send_header("Cache-Control", "public, max-age=604800, immutable")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
         except (ConnectionResetError, BrokenPipeError):
             pass
 
@@ -248,15 +351,36 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def _body(self):
-        n = int(self.headers.get("Content-Length") or 0)
-        if not n:
+        """读 JSON 请求体；非法或超限直接回 4xx 并返回 None（调用方立即 return）。"""
+        raw = self.headers.get("Content-Length")
+        if raw is None or raw == "":
             return {}
         try:
-            return json.loads(self.rfile.read(n).decode("utf-8"))
-        except ValueError:
+            n = int(raw)
+        except (TypeError, ValueError):
+            self._json({"ok": False, "message": "Content-Length 无效"}, 400)
+            return None
+        if n < 0:
+            self._json({"ok": False, "message": "Content-Length 无效"}, 400)
+            return None
+        if n == 0:
             return {}
+        if n > MAX_BODY:
+            self._json({"ok": False, "message": "请求体过大"}, 413)
+            return None
+        try:
+            d = json.loads(self.rfile.read(n).decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            self._json({"ok": False, "message": "请求体不是合法 JSON"}, 400)
+            return None
+        if not isinstance(d, dict):
+            self._json({"ok": False, "message": "请求体必须是 JSON 对象"}, 400)
+            return None
+        return d
 
     def do_GET(self):
+        if len(self.path) > MAX_QUERY:
+            return self._json({"ok": False, "message": "URL 过长"}, 414)
         u = urllib.parse.urlparse(self.path)
         path = u.path
         q = urllib.parse.parse_qs(u.query)
@@ -286,42 +410,60 @@ class Handler(BaseHTTPRequestHandler):
             if topic not in store.TOPICS:
                 return self._json({"ok": False, "message": "unknown topic"}, 400)
             try:
-                since = max(0, int((q.get("since") or ["0"])[0] or 0))
-            except (TypeError, ValueError):
-                since = 0
+                since = _qint(q, "since", 0, 0, 10 ** 9)
+            except ValueError:
+                return self._json({"ok": False, "message": "since 参数无效"}, 400)
             lp = os.path.join(store.STATE, topic, "crawl.log")
-            lines = []
+            lines, truncated = ([], False)
             if os.path.isfile(lp):
-                with open(lp, encoding="utf-8", errors="replace") as f:
-                    lines = f.read().splitlines()
+                lines, truncated = _read_log_tail(lp)
+            since = max(0, min(since, len(lines)))
             return self._json({"ok": True, "topic": topic, "lines": lines[since:],
-                               "total": len(lines), "next": len(lines)})
+                               "total": len(lines), "next": len(lines),
+                               "truncated": truncated})
         # 兼容原 index.html 的联网助手路径（/ping /search /card /videos /img）
         if path == "/ping":
-            return self._json({"ok": True, "version": "manager/1.0"})
+            # rev 便于上线后确认新版本真的生效（替换 exe 后看这个字段即可）
+            return self._json({"ok": True, "version": "manager/1.1", "rev": "20261126b"})
         if path in ("/search", "/helper/search"):
             kw = (q.get("keyword") or [""])[0].strip()
             if not kw:
                 return self._json({"ok": False, "message": "keyword 不能为空"}, 400)
-            page = max(1, min(10, int((q.get("page") or ["1"])[0] or 1)))
-            return self._json(helper.search_users(kw[:50], page))
+            if len(kw) > 200:
+                return self._json({"ok": False, "message": "keyword 过长"}, 400)
+            try:
+                page = _qint(q, "page", 1, 1, 10)
+            except ValueError:
+                return self._json({"ok": False, "message": "page 参数无效"}, 400)
+            return self._json(helper.search_users(kw[:MAX_KW], page))
         if path in ("/card", "/helper/card"):
             mid = (q.get("mid") or [""])[0].strip()
-            if not mid.isdigit():
+            if not re.match(r"^\d{1,12}$", mid):
                 return self._json({"ok": False, "message": "mid 无效"}, 400)
             return self._json(helper.up_card(mid))
         if path in ("/videos", "/helper/videos"):
             mid = (q.get("mid") or [""])[0].strip()
-            if not mid.isdigit():
+            if not re.match(r"^\d{1,12}$", mid):
                 return self._json({"ok": False, "message": "mid 无效"}, 400)
-            ps = max(1, min(30, int((q.get("ps") or ["12"])[0] or 12)))
+            try:
+                ps = _qint(q, "ps", 12, 1, 30)
+            except ValueError:
+                return self._json({"ok": False, "message": "ps 参数无效"}, 400)
             return self._json(helper.up_videos(mid, ps))
         if path in ("/img", "/helper/img"):
             src = (q.get("u") or [""])[0]
+            if not src:
+                return self._json({"ok": False, "message": "u 不能为空"}, 400)
+            if len(src) > MAX_URL:
+                return self._json({"ok": False, "message": "u 过长"}, 400)
             data = helper.fetch_image(src)
             if data is None:
                 return self._json({"ok": False, "message": "图片获取失败"}, 502)
-            return self._send(200, "image/jpeg", data, "max-age=86400")
+            etag = '"%s"' % hashlib.md5(data).hexdigest()[:16]
+            if self.headers.get("If-None-Match") == etag:
+                return self._not_modified(etag)
+            return self._send(200, "image/jpeg", data,
+                              "public, max-age=604800, immutable", {"ETag": etag})
         if path == "/api/applies":
             items = _read_applies()
             return self._json({"ok": True, "items": items,
@@ -334,8 +476,12 @@ class Handler(BaseHTTPRequestHandler):
         return self._json({"error": "not found"}, 404)
 
     def do_POST(self):
+        if len(self.path) > MAX_QUERY:
+            return self._json({"ok": False, "message": "URL 过长"}, 414)
         path = urllib.parse.urlparse(self.path).path
         body = self._body()
+        if body is None:
+            return
         if path == "/api/config":
             cfg = load_config()
             for t in TOPICS:
@@ -376,11 +522,19 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 return self._json({"ok": False, "message": repr(e)}, 500)
         if path == "/api/apply":
-            name = str(body.get("name") or "").strip()
-            uid = str(body.get("id") or "").strip()
-            videos = str(body.get("videos") or "").strip()
+            # 公网唯一可写入口：字段长度、类型、频率三重校验
+            name = _clean(body.get("name"), 32)
+            uid = _clean(body.get("id"), 12)
+            videos = _clean(body.get("videos"), 6)
+            if uid and not uid.isdigit():
+                return self._json({"ok": False, "message": "ID 只能是数字"}, 400)
+            if videos and not videos.isdigit():
+                return self._json({"ok": False, "message": "稿件数量只能是数字"}, 400)
             if not name and not uid:
                 return self._json({"ok": False, "message": "昵称和ID至少填一个"}, 400)
+            ip = _client_ip(self)
+            if not _apply_allowed(ip):
+                return self._json({"ok": False, "message": "提交过于频繁，请稍后再试"}, 429)
             ts = time.strftime("%Y-%m-%d %H:%M:%S")
             with APPLY_LOCK:
                 with open(APPLY_TXT, "a", encoding="utf-8", newline="\n") as f:
@@ -456,6 +610,36 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
+class LimitedServer(ThreadingHTTPServer):
+    """限制同时处理的连接数：每请求一线程，不设上限时小请求就能把线程打满。"""
+    daemon_threads = True
+
+    def __init__(self, *args, **kwargs):
+        self._sem = threading.Semaphore(MAX_CONCURRENT)
+        super().__init__(*args, **kwargs)
+
+    def process_request(self, request, client_address):
+        if not self._sem.acquire(timeout=5):
+            try:
+                request.sendall(b"HTTP/1.1 503 Service Unavailable\r\n"
+                                b"Content-Length: 0\r\nConnection: close\r\n\r\n")
+            except OSError:
+                pass
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except Exception:
+            self._sem.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._sem.release()
+
+
 def _debug(msg):
     """冻结 exe 无控制台，把启动诊断写到 data/ 下，方便排查窗口是否成功。"""
     print(msg, flush=True)
@@ -469,7 +653,7 @@ def _debug(msg):
 def main():
     os.chdir(BASE)
     load_config()
-    srv = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+    srv = LimitedServer(("127.0.0.1", PORT), Handler)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     url = "http://127.0.0.1:%d/" % PORT
     _debug("创作者图谱管理器已启动: %s" % url)

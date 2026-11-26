@@ -9,6 +9,7 @@ import hashlib
 import http.cookiejar
 import json
 import random
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -26,6 +27,14 @@ MIXIN_TAB = [
     22, 25, 54, 21, 56, 59, 6, 63, 57, 62, 11, 36, 20, 34, 44, 52,
 ]
 
+# WBI 签名用的 img/sub key 是站点级公开数据，与具体会话无关：
+# 放在模块级共享，多实例（联网助手 + 8 个抓取线程）只取一次 nav，省掉重复请求。
+_KEYS = {"img": None, "sub": None, "ts": 0.0}
+_KEYS_LK = threading.Lock()
+KEYS_TTL = 1800          # WBI key 缓存 30 分钟
+BUVID_TTL = 1800         # buvid 正常寿命，到点换新的
+BUVID_RETRY = 30         # spi 失败后 30 秒内不再重试，避免失败时每条请求都打一次
+
 
 class RiskError(Exception):
     """HTTP 层风控（412/403），必须走全局刹车而不是普通重试。"""
@@ -35,8 +44,9 @@ class RiskError(Exception):
 
 
 class Bili:
-    def __init__(self, log=print, user_agent=UA):
+    def __init__(self, log=print, user_agent=UA, lazy=False):
         self.log = log
+        self.ua = user_agent
         self.cj = http.cookiejar.CookieJar()
         self.opener = urllib.request.build_opener(
             urllib.request.HTTPCookieProcessor(self.cj))
@@ -47,9 +57,11 @@ class Bili:
             ("Accept-Language", "zh-CN,zh;q=0.9"),
             ("Origin", "https://search.bilibili.com"),
         ]
-        self.img = self.sub = None
-        self.keys_ts = 0.0
-        self.refresh_buvid()
+        self.buvid_ts = 0.0       # 最近一次成功拿到 buvid 的时间
+        self.buvid_try = 0.0      # 最近一次尝试的时间（失败也用，防止连环重试）
+        self._buvid_lk = threading.Lock()
+        if not lazy:
+            self.refresh_buvid()
 
     def cookie(self, name, val):
         ck = http.cookiejar.Cookie(
@@ -58,6 +70,8 @@ class Bili:
         self.cj.set_cookie(ck)
 
     def refresh_buvid(self):
+        """取真实 buvid 写进 CookieJar。失败不抛，下一次请求会再试。"""
+        self.buvid_try = time.time()
         try:
             throttle.wait()
             with self.opener.open(API + "/x/frontend/finger/spi", timeout=15) as r:
@@ -65,10 +79,30 @@ class Bili:
             self.cookie("buvid3", d["b_3"])
             self.cookie("buvid4", d["b_4"])
             self.cookie("b_nut", str(int(time.time())))
+            self.buvid_ts = time.time()
+            return True
         except Exception as e:
             self.log("spi 失败: %r" % e)
+            return False
+
+    def ensure_buvid(self, ttl=BUVID_TTL, retry=BUVID_RETRY):
+        """懒加载入口：没有 buvid（或已过期）才发 spi，并发下只发一次。"""
+        now = time.time()
+        if self.buvid_ts and now - self.buvid_ts < ttl:
+            return self
+        if self.buvid_try and now - self.buvid_try < retry:
+            return self
+        with self._buvid_lk:
+            now = time.time()
+            if self.buvid_ts and now - self.buvid_ts < ttl:
+                return self
+            if self.buvid_try and now - self.buvid_try < retry:
+                return self
+            self.refresh_buvid()
+        return self
 
     def get(self, url, timeout=15):
+        self.ensure_buvid()
         try:
             throttle.wait()
             with self.opener.open(url, timeout=timeout) as r:
@@ -78,18 +112,31 @@ class Bili:
                 raise RiskError(e.code)
             raise
 
+    @staticmethod
+    def invalidate_keys():
+        """让 WBI key 失效；所有实例共享同一份缓存，清一次全体重新取。"""
+        with _KEYS_LK:
+            _KEYS["img"] = _KEYS["sub"] = None
+            _KEYS["ts"] = 0.0
+
     def refresh_keys(self, force=False):
-        if not force and self.img and time.time() - self.keys_ts < 1800:
+        now = time.time()
+        if not force and _KEYS["img"] and now - _KEYS["ts"] < KEYS_TTL:
             return
-        d = self.get(API + "/x/web-interface/nav")
-        w = d["data"]["wbi_img"]
-        self.img, self.sub = w["img_url"], w["sub_url"]
-        self.keys_ts = time.time()
+        with _KEYS_LK:
+            now = time.time()
+            if not force and _KEYS["img"] and now - _KEYS["ts"] < KEYS_TTL:
+                return
+            d = self.get(API + "/x/web-interface/nav")
+            w = d["data"]["wbi_img"]
+            _KEYS["img"], _KEYS["sub"] = w["img_url"], w["sub_url"]
+            _KEYS["ts"] = time.time()
 
     def wbi_qs(self, params):
         self.refresh_keys()
-        raw = (self.img.rsplit("/", 1)[-1].split(".")[0]
-               + self.sub.rsplit("/", 1)[-1].split(".")[0])
+        img, sub = _KEYS["img"], _KEYS["sub"]
+        raw = (img.rsplit("/", 1)[-1].split(".")[0]
+               + sub.rsplit("/", 1)[-1].split(".")[0])
         key = "".join(raw[i] for i in MIXIN_TAB)[:32]
         p = dict(params, wts=int(time.time()))
         q = "".join(c for c in urllib.parse.urlencode(
@@ -115,10 +162,10 @@ class Bili:
                     self.log("风控 %s code=%s 休眠 %.0fs (%d/%d)" % (what, code, wait, i + 1, tries))
                     time.sleep(wait)
                     self.refresh_buvid()
-                    self.img = None
+                    self.invalidate_keys()
                     continue
                 if code == -403:
-                    self.img = None
+                    self.invalidate_keys()
                     time.sleep(5)
                     continue
                 self.log("接口错误 %s code=%s msg=%s" % (what, code, d.get("message")))
@@ -133,7 +180,7 @@ class Bili:
                     self.refresh_buvid()
                 except Exception:
                     pass
-                self.img = None
+                self.invalidate_keys()
             except Exception as e:
                 self.log("网络异常 %s: %r，10s 后重试" % (what, e))
                 time.sleep(10)

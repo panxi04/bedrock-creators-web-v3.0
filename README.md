@@ -619,7 +619,7 @@ cd /opt/creator-graph/creator-studio
 python3 server.py --no-window
 # 另开一个终端：
 curl -s http://127.0.0.1:8788/ping
-# 期望：{"ok": true, "version": "manager/1.0"}
+# 期望：{"ok": true, "version": "manager/1.1", "rev": "20261126b"}
 ```
 
 `--no-window` 是关键：不加它会尝试开原生窗口，服务器没桌面环境会走「降级打开浏览器」分支，服务能起但日志会报错。
@@ -881,35 +881,78 @@ scp root@1.2.3.4:/opt/creator-graph/creator-studio/apply_list.txt creator-studio
 - 后端：抓取引擎与联网助手现在共用同一条 0.35 秒最小请求间隔，未命中缓存时全站合计约 3 次/秒；命中缓存（5 分钟 TTL）瞬时返回；共用节流后自己把自己刷到 412 的情况更少
 - 实际感受：十几个人同时搜会排队，几十个人同时搜会明显变慢——这是 B 站接口限速导致的，加配置没用，只能加缓存或错峰
 
-## 7. Windows 服务器方案（整包上传那条路）
+## 7. 实际部署路径：Windows Server + Cloudflare Tunnel + Caddy
 
-如果你更熟 Windows，这套也完全可行。先把三件事说清楚，否则会卡在第一步：
+> 这一节就是**当前线上正在跑的那一套**（`https://graph.upxingtu.top`），从零到上线约 40 分钟。
+> 它的核心特征是：**服务器一个入站端口都不开**。Cloudflare 通过隧道从服务器"拉"流量，公网扫不到源站 IP，HTTPS 证书也由 Cloudflare 签发，不用自己申请。
 
-1. **8788 托管的是管理器后台，不是星图**。`server.py` 只发 `/`、`/app.js`、`/style.css`，不托管 `index.html`、`js/`、`data/`。直接访问 `http://IP:8788` 看到的是抓取面板
-2. **8788 不能对公网开放**。管理接口没有鉴权，只能本机访问、由反代转发必要路径
-3. **后端要作为服务常驻**。远程桌面里双击 exe，注销或重启就没了
+### 7.1 拓扑
 
-另外：项目路径别带中文，服务器上放 `C:\creator-graph\`；上传时排除 `creator-studio/state/`（约 72 MB）；Windows 自身吃内存，**至少 2 核 2G，建议 2 核 4G**。
+```
+访客浏览器
+   │  HTTPS 443（橙云代理）
+   ▼
+Cloudflare 边缘（缓存 / WAF / 限流 / DDoS）
+   │  隧道：cloudflared 从服务器主动向外建连，无需入站端口
+   ▼
+127.0.0.1:8080  Caddy
+   ├─ /api/apply /ping /search /card /videos /img  →  反代 127.0.0.1:8788
+   └─ 其余路径  →  C:\creator-graph 静态文件（gzip + file_server）
+                        │
+                        ▼
+                graph-server.exe（NSSM 服务，只监听 127.0.0.1:8788）
+```
 
-### 7.1 摆好目录
+三条硬约束，任何一条破了都会出问题：
+
+1. **8788 只监听 `127.0.0.1`**（代码里写死，改不了）；它是管理器后台，`/api/crawl`、`/api/config`、`/api/render` 都没有鉴权
+2. **Caddy 只监听 `127.0.0.1:8080`**，由隧道转发进来，不直接对公网
+3. **防火墙一条入站规则都不加**，只保留远程桌面（或干脆只用云厂商的 VNC）
+
+### 7.2 对外白名单（最小暴露）
+
+公开页面实际只会调用下面 6 个路径，**只把这 6 条转给后端**，其余 `/api/*` 一律 404：
+
+| 路径 | 谁在用 | 是否对外 | 说明 |
+|---|---|---|---|
+| `/api/apply` | 申请收录 | ✅ | 唯一可写接口，写入 `apply_list.txt` |
+| `/ping` | 前端探测后端在线 | ✅ | 返回版本号，用来确认 exe 是否新版 |
+| `/search` | 联网搜人 | ✅ | 只读，走 B 站接口 |
+| `/card` | 右键看资料 | ✅ | 只读 |
+| `/videos` | 右键看作品 | ✅ | 只读 |
+| `/img` | 头像代理 | ✅ | 只允许 `*.hdslb.com`，带进程内 LRU + ETag |
+| `/api/config`、`/api/status` | 管理器读配置/状态 | ❌ 404 | 能改关键词、看全量数据 |
+| `/api/crawl`、`/api/incremental`、`/api/stop` | 抓取控制 | ❌ 404 | 能拿你的出口 IP 去刷 B 站 |
+| `/api/render`、`/api/render-status` | 重算布局 | ❌ 404 | 能把服务器 CPU 打满 |
+| `/api/pending-add`、`/api/pending-remove` | 待渲染名单 | ❌ 404 | 能改数据 |
+| `/api/applies`、`/api/apply-read` | 收件箱 | ❌ 404 | 访客不该看到别人的申请 |
+| `/api/log`、`/api/data/*`、`/api/open-visual` | 日志 / 全量数据 / 开浏览器 | ❌ 404 | 信息泄露 + 无意义 |
+
+**为什么不用"只封几个"的写法**：白名单漏一条就是全部暴露，黑名单漏一条只是少封一条。这套接口没有鉴权，只能按最小暴露来。
+
+### 7.3 摆好目录
 
 ```
 C:\creator-graph\
-├─ index.html                 ← 星图页面
-├─ js\                        ← 7 个前端模块
-├─ data\                      ← 约 32 MB 数据（必须传）
-├─ creator-studio\            ← 配置 / 源码 / web / data
+├─ index.html                 星图页面
+├─ js\                        7 个前端模块
+├─ data\                      约 32 MB 数据
+├─ creator-studio\            配置 / apply_list.txt / state\
 │   ├─ config.json
-│   ├─ apply_list.txt         申请收录会写这里
-│   └─ state\                 可留空目录，但必须存在且可写
-└─ graph-server.exe           ← 由「创作者图谱管理器.exe」改名而来
+│   ├─ apply_list.txt         申请收录写这里
+│   └─ state\                 必须是可写目录
+├─ graph-server.exe           由「创作者图谱管理器.exe」改名
+├─ backend.log                NSSM 收集的后端输出
+└─ C:\caddy\Caddyfile         Caddy 配置（不在项目目录里也行）
 ```
 
-exe **必须和 `creator-studio\` 同级**（程序按自身所在目录定位配置和数据），改名不影响功能。
+exe 必须和 `creator-studio\` 同级——程序按自身所在目录定位配置和数据。路径别带中文。
 
-### 7.2 把后端注册成服务
+> **可执行文件不在仓库里**：从 [Releases](https://github.com/panxi04/bedrock-creators-web-v3.0/releases) 下载最新版，把 `创作者图谱管理器.exe` 改名为 `graph-server.exe` 再放到上面的目录。仓库只保留源码、前端与数据，13 MB 的二进制走 Releases 分发，不进 git 历史，每次发版也不用重新提交。
 
-用 [NSSM](https://nssm.cc/download)，把 `nssm.exe` 放到 `C:\nssm\`：
+### 7.4 把后端注册成服务
+
+用 [NSSM](https://nssm.cc/download)，`nssm.exe` 放 `C:\nssm\`：
 
 ```bat
 C:\nssm\nssm.exe install CreatorGraph C:\creator-graph\graph-server.exe --no-window
@@ -923,29 +966,28 @@ C:\nssm\nssm.exe start CreatorGraph
 验证：
 
 ```bat
-curl http://127.0.0.1:8788/ping
-:: 期望 {"ok": true, "version": "manager/1.0"}
-type C:\creator-graph\creator-studio\data\startup.log
+curl -s http://127.0.0.1:8788/ping
+:: 期望 {"ok": true, "version": "manager/1.1", "rev": "20261126b"}
 ```
 
-> `--no-window` 必须加。单文件 exe 每次启动会解包到 `%TEMP%`（2～3 秒），LocalSystem 有权限，不用额外配置。
+`--no-window` 必须加，否则单文件 exe 会尝试开桌面窗口，服务会话里必失败。启动后 5～10 秒内 `sc query` 显示 `START_PENDING` 是正常解包，不用管。
 
-### 7.3 Caddy 托管静态 + 反代
+### 7.5 Caddy：静态 + 反代
 
 下载 `caddy_windows_amd64.exe`，改名 `C:\caddy\caddy.exe`，同目录建 `Caddyfile`：
 
 ```caddyfile
-# 有域名（80/443 已放行、域名已解析到本机）：自动申请 HTTPS
-graph.example.com {
-	root * C:\creator-graph
+:8080 {
+	root * C:/creator-graph
 	encode gzip
 
-	# 公开接口：只有这 6 条走反代
-	handle /api/apply /ping /search /card /videos /img {
+	# 白名单：只有这 6 条转给后端
+	@helper path /api/apply /ping /search /card /videos /img
+	handle @helper {
 		reverse_proxy 127.0.0.1:8788
 	}
 
-	# 其余 /api/* 是管理接口，一律不对外
+	# 其余 /api/* 一律不对外
 	handle /api/* {
 		respond 404
 	}
@@ -961,7 +1003,11 @@ graph.example.com {
 }
 ```
 
-没有域名就把第一行换成 `:80`（不做 HTTPS，浏览器会提示不安全，但功能完整）。想完全不开入站端口，参考 §3.7，把这里的监听改成 `http://127.0.0.1:8080`，前面挂 Cloudflare Tunnel。
+三个容易踩的点：
+
+1. **第一行必须是 `:8080`，不能写成 `http://127.0.0.1:8080`**。后者是"站点地址"匹配，Caddy 会只接受 `Host: 127.0.0.1`，而隧道转发过来的 Host 是你的域名，结果就是 `200` 但 `content-length: 0`——页面全白，日志里却看不到错误。
+2. **`handle` 只吃一个匹配器**。`handle /a /b { ... }` 会报 `wrong argument count`，必须用 `@helper path /a /b` 命名匹配器。
+3. **Caddyfile 不能有 BOM、不能混入别的命令**。远程桌面里多行粘贴很容易把几条命令拼成一行写进文件；写完用 `caddy validate --config C:\caddy\Caddyfile` 检查。
 
 先前台跑通：
 
@@ -970,7 +1016,7 @@ cd C:\caddy
 caddy run --config C:\caddy\Caddyfile
 ```
 
-浏览器打开 `http://服务器IP/`，能看到星图、能联网搜人，再注册成服务：
+浏览器打开 `http://服务器IP:8080/` 能看到星图，再按 `Ctrl+C` 停掉，注册成服务：
 
 ```bat
 C:\nssm\nssm.exe install Caddy C:\caddy\caddy.exe run --config C:\caddy\Caddyfile
@@ -979,103 +1025,162 @@ C:\nssm\nssm.exe set Caddy Start SERVICE_AUTO_START
 C:\nssm\nssm.exe start Caddy
 ```
 
-### 7.4 直连时防火墙只开 80 / 443
+### 7.6 防火墙：一条入站规则都不加
 
-```bat
-netsh advfirewall firewall add rule name="Web-HTTP"  dir=in action=allow protocol=TCP localport=80
-netsh advfirewall firewall add rule name="Web-HTTPS" dir=in action=allow protocol=TCP localport=443
-```
-
-**不要**给 8788 加规则（Windows 入站默认拒绝，保持默认即可）。确认外网打不开：
+Windows 入站默认拒绝，保持默认即可。唯一要确认的是 **8788 和 8080 外网都打不开**：
 
 ```bat
 curl -m 3 http://<公网IP>:8788/ping
-:: 期望超时 / 拒绝连接
+curl -m 3 http://<公网IP>:8080/
+:: 两个都应超时 / 拒绝连接
 ```
 
-验收同样按 §3.8 的 11 条过一遍。
-
-### 7.5 如果一定要用 Nginx for Windows
-
-能用，但比 Caddy 多三步手工活：解压到 `C:\nginx`、改 `conf\nginx.conf`、自己装服务。把下面这段放进 `http { }`（`include mime.types;` 必须在，否则 `.json` / `.js` 的 MIME 会错）：
-
-```nginx
-server {
-    listen 80;
-    server_name graph.example.com;
-    root C:/creator-graph;          # 正斜杠，别用反斜杠
-    index index.html;
-    charset utf-8;
-
-    gzip on;
-    gzip_comp_level 6;
-    gzip_min_length 1024;
-    gzip_types text/plain text/css application/javascript application/json image/svg+xml;
-
-    location = /index.html { add_header Cache-Control "no-cache"; }
-    location /js/          { expires 7d; add_header Cache-Control "public"; }
-    location /data/        { add_header Cache-Control "no-cache"; try_files $uri =404; }
-
-    location = /api/apply {
-        limit_req zone=apply burst=3 nodelay;
-        proxy_pass http://127.0.0.1:8788;
-    }
-    location /api/ { return 404; }
-
-    location = /ping   { proxy_pass http://127.0.0.1:8788; }
-    location = /search { proxy_pass http://127.0.0.1:8788; proxy_read_timeout 20s; }
-    location = /card   { proxy_pass http://127.0.0.1:8788; proxy_read_timeout 20s; }
-    location = /videos { proxy_pass http://127.0.0.1:8788; proxy_read_timeout 20s; }
-    location = /img    { proxy_pass http://127.0.0.1:8788; }
-
-    location / { try_files $uri $uri/ /index.html; }
-}
-```
-
-`limit_req` 需要先在 `http { }` 顶层定义：
-
-```nginx
-limit_req_zone $binary_remote_addr zone=apply:10m rate=6r/m;
-```
-
-启动与重载（**必须在 `C:\nginx` 目录下执行**）：
+如果之前为测试加过 80/443/8080 的放行规则，删掉：
 
 ```bat
-cd C:\nginx
-nginx.exe
-nginx.exe -s reload
+netsh advfirewall firewall delete rule name="Web-HTTP"
+netsh advfirewall firewall delete rule name="Web-HTTPS"
 ```
 
-装服务：
+### 7.7 Cloudflare Tunnel
+
+1. 域名托管到 Cloudflare（免费版够用），DNS 记录保持橙云（Proxied）
+2. 控制台 → **Zero Trust → Networks → Tunnels → Create a tunnel → Cloudflared**，起个名字（如 `creator-graph`）
+3. 选 Windows，复制页面给出的安装命令，其中含一长串 `--token`；在服务器上以管理员运行（或下载 MSI 安装）
+4. 隧道详情 → **Public Hostname → Add a public hostname**：
+   - Subdomain：`graph`（**不要**填主域名，也不要建成"私有网络"）
+   - Domain：`upxingtu.top`
+   - Service：`http://127.0.0.1:8080`（**末尾不要带 `/`**，带了会报 Bad Configuration）
+5. 保存后 Cloudflare 会自动在 DNS 里加一条 `graph` → `<隧道ID>.cfargotunnel.com` 的 CNAME（橙云），不用手动加
+6. 验证隧道进程：`Get-Service cloudflared` 应为 Running；日志在 `C:\ProgramData\cloudflared\`
+7. 公网验证：
 
 ```bat
-C:\nssm\nssm.exe install Nginx C:\nginx\nginx.exe
-C:\nssm\nssm.exe set Nginx AppDirectory C:\nginx
-C:\nssm\nssm.exe start Nginx
+curl -s https://graph.upxingtu.top/ping
+:: 期望 {"ok": true, "version": "manager/1.1", "rev": "20261126b"}
 ```
 
-HTTPS 得自己找证书（`win-acme` 或手动放 pem），不如 Caddy 省事。Windows 版 Nginx 是少量 worker、无 epoll，这个量级够用，但别指望它扛大流量。
+> 如果看到 `1033` / `530`：说明隧道有连接但路由没配对——多半是 Public Hostname 建成了"私有网络"，或 Service 指向了错误端口。
 
-> IIS 也能做（静态 + ARR + URL Rewrite），但要装两个额外模块、规则是 XML，比 Caddyfile 难调，新手不建议。
+### 7.8 上线验收
 
-### 7.6 Windows 特有坑
+| # | 检查 | 期望 |
+|---|---|---|
+| 1 | `https://域名/` | 星图正常渲染，三分区可切 |
+| 2 | `curl https://域名/ping` | `manager/1.1` + `rev` 字段（没有 rev 就是旧 exe） |
+| 3 | `/search?keyword=测试` | 返回 UP 列表 |
+| 4 | `/img?u=<真实 hdslb 头像地址>` | `200`、`image/jpeg`、几十 KB |
+| 5 | `https://域名/api/config` | **404** |
+| 6 | `https://域名/api/crawl` | **404** |
+| 7 | 页面导出 PNG | 人物名与头像齐全（聚焦视图同样） |
+| 8 | 提交一条申请收录 | 提示成功，`creator-studio\apply_list.txt` 多一行 |
+| 9 | F12 → Network | `app.js?v=...` 为最新字节数；无红色报错 |
+| 10 | `curl http://<公网IP>:8788/ping` | 超时 / 拒绝 |
+| 11 | `curl http://<公网IP>:8080/` | 超时 / 拒绝 |
+| 12 | 手机 4G 打开 | 首屏 5～15 秒出图 |
+
+### 7.9 发版流程（三种改动，三种生效方式）
+
+| 改了什么 | 传什么 | 怎么生效 | 怎么确认 |
+|---|---|---|---|
+| 前端（`index.html`、`js/*.js`） | 对应静态文件 | 直接覆盖，**不用重启任何服务** | 改 `index.html` 里 `js/app.js?v=` 的版本号，浏览器 Ctrl+F5 |
+| 后端（`server.py`、`helper.py`、`bili.py`） | **重新打包的 exe**，只传 `.py` 无效 | `sc stop CreatorGraph` → 覆盖 `graph-server.exe` → `sc start` | `curl 127.0.0.1:8788/ping` 看 `rev` |
+| 数据（`data/*.json`、布局） | json + `layouts_*` 同批 | 直接覆盖 | Ctrl+F5，控制台无「布局加载失败」 |
+
+发版必须遵守的两条：
+
+1. **每次后端改动都把 `/ping` 的 `rev` 升一位**（如 `20261126b` → `20261127a`）。这是唯一能确认"服务器上跑的到底是哪一版"的依据——文件大小、修改时间都会被文件占用、缓存、改名骗过去。
+2. **每次前端改动都改 `?v=`**。原因见下一节。
+
+### 7.10 Cloudflare 缓存与限流（必读）
+
+**缓存**
+
+- Cloudflare 默认缓存 `.js`、`.css`、图片，源站没发 `Cache-Control` 时也会按扩展名给 `max-age=14400`（4 小时）
+- 结果是：你换了 `js/app.js`，服务器上是新的，访客浏览器拿到的还是旧代码，`Ctrl+F5` 也绕不过——强刷只清本地缓存，边缘缓存 `HIT` 直接返回
+- **判断方法**：
+
+```bash
+curl -sI https://域名/js/app.js | grep -i "cf-cache-status\|last-modified"
+# HIT + 旧日期 = 边缘缓存里是旧的
+curl -s "https://域名/js/app.js?v=$(date +%s)" | wc -c
+# 带随机参数会 MISS 回源，字节数与本地一致 = 源站文件没问题
+```
+
+- **解决**：`index.html` 里给脚本加版本号 `js/app.js?v=20261126b`（查询串是独立缓存键，必然回源）；或在 Cloudflare 加一条 Cache Rule 对 `/js/*` 设 Bypass。HTML 本身是 `DYNAMIC`，不缓存，所以只要换 `index.html` 就立刻生效
+
+**限流**
+
+Cloudflare 免费版的速率限制（Security → WAF → Rate limiting rules）能力是固定的：
+
+| | 规则数 | 计数窗口 | 计数维度 |
+|---|---|---|---|
+| Free | 1 条 | 固定 10 秒（部分账户可选 60 秒），**不能自定义** | 只能按客户端 IP |
+| Pro（约 $25/月） | 约 10 条 | 10 秒 ~ 60 秒 | IP + URI/方法 |
+| Business | 约 15 条 | 10 秒 ~ 60 秒 | 同上 |
+| Enterprise + Advanced | 几十条 | 最长 3600 秒、滑动窗口 | Header / Cookie / JWT 等 |
+
+所以"时间调不了"不是你配错，是套餐锁的。免费版那条唯一的规则应该这样用：
+
+```
+表达式：starts_with(http.request.uri.path, "/api/apply")
+请求：3 次 / 10 秒
+措施：阻止
+```
+
+**绝对不要把 `/img` 和 `/search` 放进同一条规则**：
+
+- `/img`：导出一张星图会并发抓几十到几百张头像，每张一个请求，10 秒 3 次的阈值会让第 3 张之后就全部 429，导出图全变字母圆点
+- `/search`：正常搜索 + 翻页 10 秒内就可能超过 3 次，访客会莫名被拦
+
+长时间窗口（每人 10 分钟 5 次）交给后端 `_apply_allowed()`，它已经在 `rev 20261126b` 里；Cloudflare 这层只负责挡"短时间密集提交"。另外免费版按**数据中心独立计数**，换 IP 或换节点就能绕过，别把它当唯一防线。
+
+**真实 IP**
+
+经过隧道后，后端看到的连接地址都是 `127.0.0.1`。真实访客 IP 在 `CF-Connecting-IP` 头里，`server.py` 的 `_client_ip()` 已经优先取它，所以按 IP 限流、写申请记录都能拿到真实地址。Caddy 反代不需要额外配置。
+
+### 7.11 网络安全加固清单（代码侧）
+
+上线前这一轮把公网可触达的面全过了一遍，改动都在这几个文件里：
+
+| 层面 | 位置 | 做法 |
+|---|---|---|
+| 暴露面 | `Caddyfile` | 只转 6 条白名单，其余 `/api/*` 返回 404；8788/8080 不对公网 |
+| 请求体 | `server.py _body()` | `Content-Length` 校验；>16 KB → 413；非法 JSON / 非对象 → 400 |
+| URL 长度 | `do_GET` / `do_POST` | 整条 URL >2 KB → 414 |
+| 参数校验 | `/search`、`/card`、`/videos` | keyword ≤200（截断 50）；mid 必须 `^\d{1,12}$`；page/ps/since 非法 → 400 |
+| 字段清洗 | `_clean()` | 去掉控制字符（含换行），防止往 `apply_list.txt` 注入假记录 |
+| 申请限流 | `_apply_allowed()` | 5 次/10 分钟/IP + 120 次/10 分钟全局，双 `deque` 滑动窗口，O(1) 摊销 |
+| 并发 | `LimitedServer` | Semaphore 32，抢不到直接 503；socket 超时 30 秒，防慢速连接占线程 |
+| 日志 | `_read_log_tail()` | `/api/log` 只读尾部 8 MB，日志再大也不会把内存打爆 |
+| 头像代理 | `helper.fetch_image()` | 域名白名单只允许 `*.hdslb.com`；URL ≤512；单张 ≤512 KB；进程内 LRU（300 张 / 64 MB） |
+| 缓存 | `/img` | ETag + `Cache-Control: public, max-age=604800, immutable`，命中返回 304 |
+| 会话 | `helper._bili()` | 进程内单例 + buvid 懒加载（30 分钟）+ 失败 30 秒退避；避免导出几百张图时发几百次 `finger/spi` |
+| 风控 | `helper._guard()` | B 站 412/403 转结构化错误并重置会话，不再把 500 抛给前端 |
+| 静态缓存 | `Caddyfile` | `/data/*`、`/index.html` 用 `no-cache`；`/js/*` 7 天（靠 `?v=` 破缓存） |
+
+配套的版本标记：`/ping` 返回 `{"version": "manager/1.1", "rev": "20261126b"}`，替换 exe 后先看这个字段，再谈功能。
+
+### 7.12 本次实际踩过的坑
 
 | 现象 | 原因 | 处理 |
 |---|---|---|
-| 服务启动即退出 | 带了窗口模式 / 缺 `--no-window` | 看 `backend.log` 与 `creator-studio\data\startup.log` |
-| 8788 被占用 | 本地管理器也在跑，或服务重复注册 | `netstat -ano \| findstr 8788`，再 `taskkill /PID x /F` |
-| 页面 404 / `.json` 被当下载 | Nginx 缺 `include mime.types;` | 补上并 `nginx -s reload` |
-| 中文日志乱码 | 路径含中文、控制台代码页 | 项目放 `C:\creator-graph`，日志用 UTF-8 查看 |
-| exe 被杀软删掉/拦截 | PyInstaller 单文件常见误报 | Defender 给 `C:\creator-graph` 加排除目录 |
-| 联网搜索偶发失败 | 时钟偏差大，B 站接口签名带时间戳 | 开启系统时间同步（`w32tm /resync`），再看 §8 |
-| 重启后网站打不开 | 服务没设自启 | `nssm set X Start SERVICE_AUTO_START` |
-| 远程桌面一注销就断 | 注销会结束会话进程 | 用服务方式跑；要窗口模式就选「断开连接」 |
+| 页面 `200` 但全白，隧道日志 `content-length=0` | Caddy 首行写成 `http://127.0.0.1:8080`，只接受该 Host | 改成 `:8080` |
+| `Caddyfile:2 unrecognized directive` | 多行粘贴把命令拼进了文件 / 带 BOM | 一条一条执行；用 `caddy validate` 检查 |
+| Cloudflare `1033` / `530` | 路由建成私有网络或主域名；Service 末尾带 `/` | 建 Public Hostname 子域，Service 不带斜杠 |
+| 改完 `app.js` 线上没变化 | CF 边缘缓存 4 小时，`Ctrl+F5` 无效 | `?v=` 破缓存或 Purge；详见 §7.10 |
+| 导出头像全是字母圆点 | ① 旧 `app.js` 预取被短路 ② CF 限流规则把 `/img` 关进去了 | 换新前端；限流规则移除 `/img` |
+| `sc start` 后 `/ping` 还是旧版本 | exe 覆盖时被占用（服务没停干净）或服务指向别的路径 | `sc qc CreatorGraph` 看 `BINARY_PATH_NAME`；`dir` 核对 13,186,564 字节 |
+| `sc query` 显示 `START_PENDING` | 单文件 exe 正在解包 | 等 5～10 秒，正常 |
+| 申请提交后没人被限制 | 在本地管理器（`127.0.0.1:8788`）里测的，不经过 Cloudflare | 用线上域名测，F12 看响应头有没有 `cf-ray` |
 
-### 7.7 Windows 与 Linux 怎么选
+### 7.13 没有域名 / 不想用 Cloudflare 时
 
-- **只想尽快上线、又不熟 Linux**：Windows + Caddy + NSSM 完全可行，照上面做就行；代价是同配置机器更贵（授权 + 内存占用），系统盘建议 40 GB 起
-- **追求便宜、稳定、好维护**：Linux 方案（§3）更合适，`systemd` + `certbot` 比 Windows 服务省心
-- **只是想给人看图**：直接纯静态（§2），最低配或对象存储就够，别为「联网搜索」养一台服务器
+- **有公网 IP、有域名**：Caddy 首行换成 `graph.example.com`，放行 80/443，Caddy 会自动申请 Let's Encrypt 证书
+- **只有公网 IP、没域名**：首行换成 `:80`，浏览器会提示不安全，功能完整
+- **在境内服务器 + 域名**：必须先完成 ICP 备案，否则 80/443 会被拦截；备案期间可以先用隧道 + 境外节点，或直接换中国香港服务器
+
+Linux + Nginx 的等价做法见 §3，逻辑一样：静态 + 6 条反代 + 其余 `/api/*` 404。
 
 ## 8. 故障排查
 
@@ -1093,6 +1198,10 @@ HTTPS 得自己找证书（`win-acme` 或手动放 pem），不如 Caddy 省事�
 | 后端日志刷 `Address already in use` | 8788 被占用 | `ss -lntp \| grep 8788`，杀掉重复进程 |
 | 上传后中文乱码 | 文件不是 UTF-8 | 全部按 UTF-8 保存；Nginx `charset utf-8;` |
 | 点「停止」后界面没变化 | 线程要走到检查点才退出；重算布局阶段不可中断 | 看日志是否出现「用户停止」；风控等待最多 2 秒生效，布局阶段等它跑完；徽章最多滞后 4 秒 |
+| 页面 200 但全白，隧道日志 `content-length=0` | Caddy 首行写成 `http://127.0.0.1:8080`，只接受该 Host | 改成 `:8080`；`caddy validate` 后重启服务 |
+| 前端文件换了，线上还是旧行为 | Cloudflare 缓存 `.js` 最长 4 小时，`Ctrl+F5` 绕不过边缘缓存 | 引用加 `?v=`，或控制台 Purge；判断方法见 §7.10 |
+| 导出头像全是字母圆点 | 旧 `app.js` 预取被短路；或 CF 限流规则把 `/img` 关进去了 | 换新前端；限流规则只留 `/api/apply` |
+| 替换 exe 后 `/ping` 版本没变 | 文件被占用没覆盖成功，或服务指向别的路径 | `sc qc CreatorGraph` 看 `BINARY_PATH_NAME`；`dir` 核对 13,186,564 字节 |
 
 ## 9. 上线前要知道的限制
 
@@ -1103,6 +1212,8 @@ HTTPS 得自己找证书（`win-acme` 或手动放 pem），不如 Caddy 省事�
 5. **联网搜索受 B 站风控约束**：无登录态、全局限速 0.35 秒，属于「尽力可用」，不是生产级搜索 API
 6. **纯静态会失去**：联网搜人、右键作品、申请收录、真实头像导出
 7. **布局与图谱强绑定**：每次更新都要重算布局，json 与 bundle 同步上传
+8. **Cloudflare 免费版限流能力有限**：1 条规则、窗口固定 10 秒、只能按 IP 计数、各数据中心独立统计；长周期（每人 10 分钟 5 次）只能靠后端 `_apply_allowed()`，别指望边缘限流挡住慢速刷子。详见 §7.10
+9. **Cloudflare 会缓存 JS/CSS 最长 4 小时**：前端发版必须改 `?v=` 或手动 Purge，否则用户看到的还是旧代码，且与服务器是否更新无关
 
 ## 10. 日常运维速查
 

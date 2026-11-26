@@ -5,3 +5,6 @@ build/
 dist/
 *.spec
 *.tmp
+
+# 安装包由 GitHub Releases 分发，不进仓库
+*.exe
