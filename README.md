@@ -7,6 +7,8 @@
 
 ---
 
+> **可执行文件不在仓库里**：从 [Releases](https://github.com/panxi04/bedrock-creators-web-v3.0/releases) 下载最新版 `graph-server.exe`，放进 §7.3 的 `C:\creator-graph\` 目录即可运行。仓库只保留源码、前端与数据，13 MB 的二进制走 Releases 分发，不进 git 历史，每次发版也不用重新提交。
+
 ## 这张图的来历（原项目声明）
 
 这张图不是从零做起的。它的数据、抓取思路和布局算法，都来自下面这个项目：
@@ -44,7 +46,7 @@
 两样东西配合着用：
 
 1. **星图页面**（`index.html`）——纯静态，双击就开，负责「看」
-2. **创作者图谱管理器**（`创作者图谱管理器.exe`）——免安装桌面程序，负责「更新数据」和「联网查人」
+2. **graph-server**（`graph-server.exe`）——免安装桌面程序，负责「更新数据」和「联网查人」
 
 只想看图，管理器完全不用碰。
 
@@ -59,7 +61,7 @@
 双击项目根目录的 `index.html`。不需要 Python、不需要起服务；断网也能看结构，头像会退回首字母。三个分区的数据都在 `data/` 里，页面会自己读。
 
 **③ 用管理器打开**
-双击 `创作者图谱管理器.exe`，点右上角「打开创作者星图 ↗」，会用系统浏览器打开同一份页面。
+双击 `graph-server.exe`，点右上角「打开创作者星图 ↗」，会用系统浏览器打开同一份页面。
 
 > 管理器必须和 `creator-studio/` 文件夹待在同一层（配置和数据在那里），搬家时请整个文件夹一起搬。
 
@@ -218,7 +220,7 @@ A：没有固定节奏，取决于维护者什么时候跑一次增量查询。�
 ```
 bedrock-creators-web/
 ├── index.html                  星图页面（骨架 + 样式 + 分区下拉 + 排行榜等）
-├── 创作者图谱管理器.exe        桌面管理器（双击运行，13MB）
+├── graph-server.exe        桌面管理器（双击运行，13MB）
 ├── images/                     页面与管理器截图（README 预览用）
 ├── js/                         前端模块（7 个）
 │   ├── app.js                  画布渲染 / 手势 / 头像 / 分区与布局切换 / 导出
@@ -272,7 +274,7 @@ bedrock-creators-web/
 
 「联网搜人」和「右键看作品」需要后端帮忙，因为 B 站接口不返回 CORS 头，浏览器直接请求会被 403。页面会按打开方式自动选地址，你不用手动配：
 
-- **双击 `index.html`（`file://`）**：连本机管理器 exe 的 `127.0.0.1:8788`，没启动时会提示「请打开创作者图谱管理器.exe」
+- **双击 `index.html`（`file://`）**：连本机管理器 exe 的 `127.0.0.1:8788`，没启动时会提示「请打开 graph-server.exe」
 - **走 http(s)（自己部署或用本地服务）**：改成同源相对路径（`/ping`、`/search`、`/card`、`/videos`、`/img`），由反向代理转给后端，不暴露后端地址；localStorage 里残留的旧地址会自动忽略
 
 看图、本地搜索、收藏、排行榜、跳 B 站都不依赖联网服务。
@@ -420,7 +422,7 @@ python server.py                 # 默认 8788，可设 CREATOR_STUDIO_PORT
 
 ```bash
 python -m PyInstaller --onefile --noconsole --clean \
-  --name "创作者图谱管理器" \
+  --name "graph-server" \
   --add-data "web;web" \
   --hidden-import=webview --hidden-import=pythonnet --hidden-import=clr \
   --hidden-import=make_layouts --hidden-import=layout_orig --hidden-import=throttle \
@@ -567,7 +569,7 @@ data/               (约 32 MB，不含断点)
 creator-studio/     （要用联网后端才传，见 §3.2）
 ```
 
-**不用传**：`创作者图谱管理器.exe`（除非你要在服务器上抓取）、`.git/`、`creator-studio/state/`（抓取断点，压缩归档后约 72 MB）。
+**不用传**：`graph-server.exe`（除非你要在服务器上抓取）、`.git/`、`creator-studio/state/`（抓取断点，压缩归档后约 72 MB）。
 中断抓取的残file `data/bedrock.json.tmp` 与原项目基准快照 `graph.json` 都已从本工程移除，不需要传。
 
 ```bash
@@ -588,7 +590,7 @@ rsync -avz --progress \
 
 这个形态下会**降级但不报错**：
 
-- 联网搜人 / 右键作品 → 提示「请打开创作者图谱管理器.exe」（因为同源 `/ping` 是 404）
+- 联网搜人 / 右键作品 → 提示「请打开 graph-server.exe」（因为同源 `/ping` 是 404）
 - 申请收录 → 提交后提示失败
 - 导出图片 → **仍然能导出**，头像降级为首字母圆点
 - 搜索、排行榜、详情卡、统计、收藏 → 全部正常
@@ -941,14 +943,13 @@ C:\creator-graph\
 │   ├─ config.json
 │   ├─ apply_list.txt         申请收录写这里
 │   └─ state\                 必须是可写目录
-├─ graph-server.exe           由「创作者图谱管理器.exe」改名
+├─ graph-server.exe           发行包，从 Releases 下载（见文首）
 ├─ backend.log                NSSM 收集的后端输出
 └─ C:\caddy\Caddyfile         Caddy 配置（不在项目目录里也行）
 ```
 
 exe 必须和 `creator-studio\` 同级——程序按自身所在目录定位配置和数据。路径别带中文。
 
-> **可执行文件不在仓库里**：从 [Releases](https://github.com/panxi04/bedrock-creators-web-v3.0/releases) 下载最新版，把 `创作者图谱管理器.exe` 改名为 `graph-server.exe` 再放到上面的目录。仓库只保留源码、前端与数据，13 MB 的二进制走 Releases 分发，不进 git 历史，每次发版也不用重新提交。
 
 ### 7.4 把后端注册成服务
 
@@ -1207,7 +1208,7 @@ Linux + Nginx 的等价做法见 §3，逻辑一样：静态 + 6 条反代 + 其
 
 1. **后端必须和 Web 服务器同机**：监听地址写死 `127.0.0.1`，只有端口可改
 2. **管理接口无鉴权**：`/api/config`、`/api/crawl`、`/api/render`、`/api/log`、`/api/data/*` 只靠「只监听本机」保护，对外必须封掉
-3. **提示文案偏本地**：后端不可达时显示「请打开创作者图谱管理器.exe」，线上访客会误解（文案问题，不影响功能）
+3. **提示文案偏本地**：后端不可达时显示「请打开 graph-server.exe」，线上访客会误解（文案问题，不影响功能）
 4. **数据文件没有版本号**：靠 `no-cache` + ETag 校验更新，别给 `/data/` 配长缓存
 5. **联网搜索受 B 站风控约束**：无登录态、全局限速 0.35 秒，属于「尽力可用」，不是生产级搜索 API
 6. **纯静态会失去**：联网搜人、右键作品、申请收录、真实头像导出

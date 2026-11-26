@@ -7,7 +7,7 @@
  * 2) 右键创作者 → 作品信息（AV/BV 号、标题、封面、播放量），卡片超链接到 B 站详情页
  *
  * 浏览器无法直接读 api.bilibili.com（不返回 CORS 头、外来 Origin 直接 403），
- * 因此实时数据经由「创作者图谱管理器.exe」内置的本地服务（127.0.0.1:8788）转发；
+ * 因此实时数据经由「graph-server.exe」内置的本地服务（127.0.0.1:8788）转发；
  * 未启动管理器时全部降级为唤起浏览器打开 B 站对应页面，功能不阻塞。
  * ------------------------------------------------------------------ */
 (function () {
@@ -173,7 +173,7 @@ function probe() {
 }
 function statusText() {
   if (!online.checked) return "联网功能检测中…";
-  return online.helper ? "创作者图谱管理器已连接" : "请打开创作者图谱管理器.exe（当前仅可跳转 B 站）";
+  return online.helper ? "graph-server 已连接" : "请打开 graph-server.exe（当前仅可跳转 B 站）";
 }
 function paintStatus() {
   var nodes = document.querySelectorAll("[data-net-status]");
@@ -302,9 +302,9 @@ function watchHelper(onUp, tries) {
 
 function renderNeedHelper() {
   workBody.innerHTML =
-    '<div class="wk-state"><b>请打开创作者图谱管理器.exe</b>' +
-    '<p>浏览器无法直接读取 B 站接口（B 站不开放跨域），读取作品由「创作者图谱管理器.exe」统一提供。</p>' +
-    '<p class="wk-cmd">双击与本页同目录的 <b>创作者图谱管理器.exe</b>，保持窗口开启即可联网搜人、看作品。</p>' +
+    '<div class="wk-state"><b>请打开 graph-server.exe</b>' +
+    '<p>浏览器无法直接读取 B 站接口（B 站不开放跨域），读取作品由「graph-server.exe」统一提供。</p>' +
+    '<p class="wk-cmd">双击与本页同目录的 <b>graph-server.exe</b>，保持窗口开启即可联网搜人、看作品。</p>' +
     '<p class="wk-dim" data-net-wait></p></div>' +
     '<div class="wk-state">' +
     '<button class="g-btn" id="wkRetry">已启动，重新检测</button></div>';
@@ -534,12 +534,12 @@ function startOnlineSearch(q) {
   refreshPanel();
   probe().then(function (ok) {
     if (oSearch.q !== q) return;
-    if (!ok) { oSearch.status = "error"; oSearch.error = "请打开创作者图谱管理器.exe，才能在线搜人"; updateButtons(); refreshPanel(); return; }
+    if (!ok) { oSearch.status = "error"; oSearch.error = "请打开 graph-server.exe，才能在线搜人"; updateButtons(); refreshPanel(); return; }
     call("/search?keyword=" + encodeURIComponent(q) + "&page=1").then(function (r) {
       if (oSearch.q !== q) return;
       if (!r.ok) {
         oSearch.status = "error";
-        oSearch.error = r.offline ? "请打开创作者图谱管理器.exe" : ("B 站搜索失败：" + (r.message || ("code " + r.code)));
+        oSearch.error = r.offline ? "请打开 graph-server.exe" : ("B 站搜索失败：" + (r.message || ("code " + r.code)));
       } else {
         oSearch.status = "done";
         oSearch.items = r.data.items || [];
@@ -687,7 +687,7 @@ function paintHelperBtn() {
   if (!helperBtn) return;
   helperBtn.classList.toggle("on", !!online.helper);
   helperBtn.classList.toggle("wait", !online.helper && waiting);
-  helperBtn.title = online.helper ? "创作者图谱管理器已连接（点击重新检测）" : "请打开创作者图谱管理器.exe";
+  helperBtn.title = online.helper ? "graph-server 已连接（点击重新检测）" : "请打开 graph-server.exe";
 }
 
 function setPop(open) {
@@ -703,7 +703,7 @@ function setPop(open) {
   }
 }
 function launchHelper() {
-  if (online.helper) { probe().then(paintHelperBtn); toast("创作者图谱管理器已连接", 1800); return; }
+  if (online.helper) { probe().then(paintHelperBtn); toast("graph-server 已连接", 1800); return; }
   // 浏览器不允许网页执行本地程序，这里不再尝试 window.open（只会开出空标签页/下载），
   // 直接把启动方式摆出来，并持续轮询：用户一启动，面板自动收起。
   setPop(true);
@@ -713,7 +713,7 @@ function launchHelper() {
     waiting = false;
     paintHelperBtn();
     setPop(false);
-    toast("创作者图谱管理器已连接", 2500);
+    toast("graph-server 已连接", 2500);
     if (workCtx.id && workModal.classList.contains("open")) loadWorks(workCtx.id);
   }, 15);
 }
@@ -726,7 +726,7 @@ if (helperPop) {
   $("hpRetry").addEventListener("click", function () {
     online.checked = false;
     probe().then(function (ok) {
-      if (ok) { setPop(false); toast("创作者图谱管理器已连接", 2500); }
+      if (ok) { setPop(false); toast("graph-server 已连接", 2500); }
       else toast("还没检测到助手，确认窗口里的脚本已经跑起来了", 4000);
     });
   });

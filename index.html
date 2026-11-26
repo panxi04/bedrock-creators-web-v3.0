@@ -663,7 +663,7 @@ try {
   <div class="find-box">
     <svg class="find-ic" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20.5 20.5l-4.3-4.3"/></svg>
     <input id="findInput" type="text" placeholder="搜索名字 / UID" autocomplete="off" autocapitalize="off" spellcheck="false" role="combobox" aria-controls="findPanel" aria-expanded="false" aria-label="搜索创作者名字或 UID">
-    <button id="helperBtn" class="helper-btn" type="button" title="联网功能由创作者图谱管理器提供" aria-label="联网功能说明">
+    <button id="helperBtn" class="helper-btn" type="button" title="联网功能由 graph-server 提供" aria-label="联网功能说明">
       <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M13 2 4.5 13.5H11l-1 8.5 8.5-11.5H12l1-8.5z"/></svg>
     </button>
     <button id="findClear" class="find-clear" type="button" aria-label="清空搜索" hidden>
@@ -684,11 +684,11 @@ try {
   <div id="helperPop" hidden>
     <div class="hp-head"><b>联网功能</b>
       <button class="hp-x" id="hpClose" type="button" aria-label="关闭">✕</button></div>
-    <p class="hp-lead">请打开 <b>创作者图谱管理器.exe</b> —— 联网搜人、看作品等功能已全部整合到该程序，由它统一提供。</p>
+    <p class="hp-lead">请打开 <b>graph-server.exe</b> —— 联网搜人、看作品等功能已全部整合到该程序，由它统一提供。</p>
     <div class="hp-acts">
       <button class="hp-btn" id="hpRetry" type="button">重新检测</button>
     </div>
-    <p class="hp-tip">双击与本页同目录的 <code>创作者图谱管理器.exe</code>，保持窗口开启即可。</p>
+    <p class="hp-tip">双击与本页同目录的 <code>graph-server.exe</code>，保持窗口开启即可。</p>
     <p class="hp-wait" data-net-wait></p>
   </div>
 </div>
@@ -795,7 +795,7 @@ try {
   </div>
 </div>
 
-<script src="js/app.js?v=20261126b"></script>
+<script src="js/app.js?v=20261126c"></script>
 <script src="js/online.js"></script>
 <script src="js/rank.js"></script>
 <script src="js/detail.js"></script>

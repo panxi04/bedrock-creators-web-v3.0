@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""创作者图谱管理器：本地 HTTP 服务 + 原生桌面窗口。
+"""graph-server：本地 HTTP 服务 + 原生桌面窗口。
 
 统一管理：抓取数据 / 联网搜索 / 打开创作者星图。
 """
@@ -656,7 +656,7 @@ def main():
     srv = LimitedServer(("127.0.0.1", PORT), Handler)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     url = "http://127.0.0.1:%d/" % PORT
-    _debug("创作者图谱管理器已启动: %s" % url)
+    _debug("graph-server 已启动: %s" % url)
 
     if "--no-window" in sys.argv:
         # 调试模式：不开窗口，保持进程
@@ -669,7 +669,7 @@ def main():
         try:
             import webview
             _debug("pywebview 已导入，创建原生窗口")
-            win = webview.create_window("创作者图谱管理器", url, width=1280, height=860,
+            win = webview.create_window("graph-server", url, width=1280, height=860,
                                         min_size=(960, 640))
             webview.start(icon=ICON if os.path.isfile(ICON) else None)
             _debug("原生窗口已关闭，退出")
