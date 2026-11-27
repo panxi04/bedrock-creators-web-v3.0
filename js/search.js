@@ -237,21 +237,24 @@ input.addEventListener("keydown", function (ev) {
 });
 clearBtn.addEventListener("click", clearAll);
 list.addEventListener("pointerdown", function (ev) {
-  if (window.GRAPH_ONLINE) {
-    var fav = ev.target.closest(".find-add[data-add]");
-    if (fav) {
-      ev.preventDefault();
-      var fid = fav.dataset.add, node = null;
-      for (var i = 0; i < results.length; i++) if (String(results[i].id) === fid) node = results[i];
-      window.GRAPH_ONLINE.toggleFav(fid, node ? { id: fid, name: node.name, face: node.face } : null);
-      render();
-      return;
-    }
-    if (window.GRAPH_ONLINE.handleListAction(ev)) return;
+  if (!window.GRAPH_ONLINE) return;
+  var fav = ev.target.closest(".find-add[data-add]");
+  if (fav) {
+    ev.preventDefault();
+    var fid = fav.dataset.add, node = null;
+    for (var i = 0; i < results.length; i++) if (String(results[i].id) === fid) node = results[i];
+    window.GRAPH_ONLINE.toggleFav(fid, node ? { id: fid, name: node.name, face: node.face } : null);
+    render();
+    return;
   }
+  window.GRAPH_ONLINE.handleListAction(ev);
+});
+// 选人放到 click 阶段：pointerdown 里 preventDefault 会取消手机上的触摸滚动手势。
+// 滚动时浏览器不会发 click，所以既能滑列表，也能点选。
+list.addEventListener("click", function (ev) {
+  if (ev.target.closest(".find-add[data-add], [data-online-add], .on-row, [data-act]")) return;
   var row = ev.target.closest(".find-row");
   if (!row || row.dataset.i == null) return;
-  ev.preventDefault();
   select(+row.dataset.i);
 });
 document.addEventListener("pointerdown", function (ev) {

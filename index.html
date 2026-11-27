@@ -504,11 +504,14 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: var(--site-b
   #helperPop { top: auto; right: auto; bottom: calc(100% + 7px); left: 0; width: min(100vw - 24px, 340px); }
   /* 移动端工具条与搜索框同在一行，进工具时先把搜索框收起来，避免压住 */
   body.tooling #finder { display: none; }
-  #findList { max-height: 44vh; }
+  #findList { max-height: 44vh; touch-action: pan-y; -webkit-overflow-scrolling: touch; }
   #rank { bottom: calc(62px + env(safe-area-inset-bottom)); width: min(58vw, 212px); }
   .rk-list { max-height: 38vh; }
-  /* 统计面板上移，避开左下角的搜索框与工具栏 */
-  #statsPanel { bottom: calc(56px + env(safe-area-inset-bottom)); max-width: min(300px, calc(100vw - 24px)); }
+  /* 统计面板移到排行榜上方，两个收起条不再横向叠在一起；展开内容可滚动 */
+  #statsPanel { left: auto; right: calc(12px + env(safe-area-inset-right));
+    bottom: calc(108px + env(safe-area-inset-bottom)); width: min(58vw, 212px);
+    max-width: calc(100vw - 24px); }
+  #statsPanel .st-body { max-height: 38vh; overflow-y: auto; overscroll-behavior: contain; }
   .g-modal { padding: 12px; align-items: flex-end; }
   .g-panel { max-height: calc(100vh - 24px); }
   .g-panel-sm { width: 100%; }

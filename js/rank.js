@@ -332,7 +332,11 @@ function bind() {
     el.classList.toggle("collapsed", state.collapsed);
     this.setAttribute("aria-expanded", state.collapsed ? "false" : "true");
     writeJSON(K_UI, { collapsed: state.collapsed, metric: state.metric });
-    if (!state.collapsed) render();
+    if (!state.collapsed) {
+      // 手机上两个底部面板同时展开会互相遮挡；展开排行榜时先收起统计面板
+      if (window.innerWidth <= 640 && window.GRAPH_STATS && window.GRAPH_STATS.close) window.GRAPH_STATS.close();
+      render();
+    }
   });
   if (state.collapsed) el.classList.add("collapsed");
 
@@ -411,7 +415,14 @@ function bind() {
     refresh: render,
     metric: function () { return state.metric; },
     setMetric: function (m) { if (METRIC_LABEL[m]) { state.metric = m; render(); } },
-    open: function () { state.collapsed = false; el.classList.remove("collapsed"); render(); }
+    open: function () { state.collapsed = false; el.classList.remove("collapsed"); render(); },
+    close: function () {
+      state.collapsed = true;
+      el.classList.add("collapsed");
+      var head = $("rkHead");
+      if (head) head.setAttribute("aria-expanded", "false");
+      writeJSON(K_UI, { collapsed: true, metric: state.metric });
+    }
   };
 }
 

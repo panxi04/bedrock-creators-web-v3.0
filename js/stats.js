@@ -25,6 +25,13 @@ var commPending = null;
 function sourceName() { return document.getElementById("sourceSelect").value || "bedrock.json"; }
 function sourceKey() { return sourceName().replace(/\.json$/, ""); }
 
+function closeStats() {
+  if (!panel || panel.classList.contains("collapsed")) return;
+  panel.classList.add("collapsed");
+  if (head) head.setAttribute("aria-expanded", "false");
+  document.body.classList.remove("stats-open");
+}
+
 // 展开/收起
 if (head) head.addEventListener("click", function () {
   var opening = panel.classList.contains("collapsed");
@@ -34,6 +41,8 @@ if (head) head.addEventListener("click", function () {
   if (opening) {
     // 统计面板与详情卡都在左侧，同时展开会重叠；展开统计时收起详情卡（功能不变，随时可再点开）
     if (window.GRAPH_DETAIL && window.GRAPH_DETAIL.close) window.GRAPH_DETAIL.close();
+    // 手机上统计与排行榜都从底部弹起，同时展开会互相盖住，展开统计时先收起排行榜
+    if (window.innerWidth <= 640 && window.GRAPH_RANK && window.GRAPH_RANK.close) window.GRAPH_RANK.close();
     render();
   }
 });
@@ -222,5 +231,5 @@ function render() {
   else if (curTab === "comm") chartComm(d);
 }
 
-window.GRAPH_STATS = { render: render, tab: function (t) { curTab = t; render(); } };
+window.GRAPH_STATS = { render: render, close: closeStats, tab: function (t) { curTab = t; render(); } };
 })();
