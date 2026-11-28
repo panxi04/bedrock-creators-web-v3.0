@@ -500,13 +500,8 @@ function handleListAction(ev) {
     addOnlineFav(addOn.dataset.onlineAdd);
     return true;
   }
-  var orow = ev.target.closest(".on-row");
-  if (orow && orow.dataset.mid) {
-    ev.preventDefault();
-    ev.stopPropagation();
-    openWorks(orow.dataset.mid);
-    return true;
-  }
+  // .on-row 打开作品改到 click 阶段（见 handleListClick）：
+  // pointerdown 里 preventDefault 会取消手机触摸滚动手势，导致结果列表滑不动。
   var act = ev.target.closest("[data-act]");
   if (!act) return false;
   ev.preventDefault();
@@ -518,6 +513,17 @@ function handleListAction(ev) {
   else if (k === "del") { removeFav(id); if (window.GRAPH_REFRESH_SEARCH) window.GRAPH_REFRESH_SEARCH(); }
   return true;
 }
+
+// 联网结果行放到 click 阶段打开作品：滚动手势不会被 pointerdown 的 preventDefault 取消。
+// 按钮（[data-online-add]/[data-act]）仍在 pointerdown 里处理，click 阶段跳过它们避免重复触发。
+function handleListClick(ev) {
+  if (ev.target.closest("[data-online-add], [data-act]")) return;
+  var orow = ev.target.closest(".on-row");
+  if (!orow || !orow.dataset.mid) return;
+  openWorks(orow.dataset.mid);
+}
+var findListEl = $("findList");
+if (findListEl) findListEl.addEventListener("click", handleListClick);
 
 /* ================= 按名字联网搜人（经助手调 B 站用户搜索） ================= */
 var oSearch = { q: "", status: "idle", items: [], error: "" };
